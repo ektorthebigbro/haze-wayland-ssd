@@ -15,14 +15,18 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::ffi::CStr;
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 const VERSION: &CStr = c"0.1.0";
 const HOST_STATUS: &CStr = c"supported";
 const MANAGER_VERSION: c_int = 2;
+const XDG_TOPLEVEL_VERSION: c_int = 6;
 const MODE_CLIENT_SIDE: u32 = 1;
 const MODE_SERVER_SIDE: u32 = 2;
 const EVENT_CONFIGURE: u32 = 0;
+const ERROR_ALREADY_CONSTRUCTED: u32 = 1;
+const ERROR_ORPHANED: u32 = 2;
+const ERROR_INVALID_MODE: u32 = 3;
 const MANAGER_INTERFACE_NAME: &CStr = c"zxdg_decoration_manager_v1";
 
 #[repr(C)]
@@ -43,6 +47,18 @@ pub struct wl_global {
 #[repr(C)]
 pub struct wl_resource {
     _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct wl_list {
+    prev: *mut wl_list,
+    next: *mut wl_list,
+}
+
+#[repr(C)]
+pub struct wl_listener {
+    link: wl_list,
+    notify: Option<wl_notify_func_t>,
 }
 
 #[repr(C)]
@@ -77,6 +93,7 @@ unsafe impl<const N: usize> Sync for ImplementationTable<N> {}
 
 type wl_global_bind_func_t =
     unsafe extern "C" fn(client: *mut wl_client, data: *mut c_void, version: u32, id: u32);
+type wl_notify_func_t = unsafe extern "C" fn(listener: *mut wl_listener, data: *mut c_void);
 type wl_resource_destroy_func_t = unsafe extern "C" fn(resource: *mut wl_resource);
 type wl_global_create_fn = unsafe extern "C" fn(
     display: *mut wl_display,
@@ -97,25 +114,33 @@ extern "C" {
     ) -> *mut wl_resource;
     fn wl_resource_destroy(resource: *mut wl_resource);
     fn wl_resource_get_version(resource: *mut wl_resource) -> c_int;
+    fn wl_resource_get_user_data(resource: *mut wl_resource) -> *mut c_void;
+    fn wl_resource_add_destroy_listener(resource: *mut wl_resource, listener: *mut wl_listener);
     fn wl_resource_post_event(resource: *mut wl_resource, opcode: u32, ...);
+    fn wl_resource_post_error(resource: *mut wl_resource, code: u32, msg: *const c_char, ...);
     fn wl_resource_set_implementation(
         resource: *mut wl_resource,
         implementation: *const c_void,
         data: *mut c_void,
         destroy: Option<wl_resource_destroy_func_t>,
     );
+    fn wl_list_remove(element: *mut wl_list);
 }
 
 static REAL_WL_GLOBAL_CREATE: OnceCell<wl_global_create_fn> = OnceCell::new();
 static INJECTED_DISPLAYS: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+static DECORATED_TOPLEVELS: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| Mutex::new(HashSet::new()));
 
 thread_local! {
     static IN_HAZE_GLOBAL_CREATE: Cell<bool> = const { Cell::new(false) };
 }
 
 static EMPTY_TYPES: InterfaceTypes<1> = InterfaceTypes([ptr::null()]);
-static DECORATION_TYPES: InterfaceTypes<3> =
-    InterfaceTypes([&TOPLEVEL_DECORATION_INTERFACE, ptr::null(), ptr::null()]);
+static DECORATION_TYPES: InterfaceTypes<3> = InterfaceTypes([
+    &TOPLEVEL_DECORATION_INTERFACE,
+    &XDG_TOPLEVEL_INTERFACE,
+    ptr::null(),
+]);
 
 static MANAGER_REQUESTS: [wl_message; 2] = [
     wl_message {
@@ -172,6 +197,15 @@ static TOPLEVEL_DECORATION_INTERFACE: wl_interface = wl_interface {
     events: DECORATION_EVENTS.as_ptr(),
 };
 
+static XDG_TOPLEVEL_INTERFACE: wl_interface = wl_interface {
+    name: c"xdg_toplevel".as_ptr(),
+    version: XDG_TOPLEVEL_VERSION,
+    method_count: 0,
+    methods: ptr::null(),
+    event_count: 0,
+    events: ptr::null(),
+};
+
 static MANAGER_IMPLEMENTATION: ImplementationTable<2> = ImplementationTable([
     manager_destroy as *const c_void,
     manager_get_toplevel_decoration as *const c_void,
@@ -181,6 +215,14 @@ static DECORATION_IMPLEMENTATION: ImplementationTable<3> = ImplementationTable([
     decoration_set_mode as *const c_void,
     decoration_unset_mode as *const c_void,
 ]);
+
+#[repr(C)]
+struct DecorationState {
+    toplevel_destroy_listener: wl_listener,
+    toplevel: usize,
+    decoration: *mut wl_resource,
+    toplevel_listener_linked: bool,
+}
 
 fn real_wl_global_create() -> Option<wl_global_create_fn> {
     REAL_WL_GLOBAL_CREATE
@@ -196,6 +238,10 @@ fn real_wl_global_create() -> Option<wl_global_create_fn> {
         })
         .copied()
         .ok()
+}
+
+fn decorated_toplevels() -> Option<MutexGuard<'static, HashSet<usize>>> {
+    DECORATED_TOPLEVELS.lock().ok()
 }
 
 unsafe fn is_decoration_manager_interface(interface: *const wl_interface) -> bool {
@@ -286,24 +332,59 @@ unsafe extern "C" fn manager_get_toplevel_decoration(
     client: *mut wl_client,
     resource: *mut wl_resource,
     id: u32,
-    _toplevel: *mut wl_resource,
+    toplevel: *mut wl_resource,
 ) {
     if client.is_null() || resource.is_null() {
+        return;
+    }
+    if toplevel.is_null() {
+        wl_resource_post_error(resource, ERROR_ORPHANED, c"xdg_toplevel is null".as_ptr());
+        return;
+    }
+
+    let toplevel_key = toplevel as usize;
+    let mut decorated = match decorated_toplevels() {
+        Some(decorated) => decorated,
+        None => return,
+    };
+    if !decorated.insert(toplevel_key) {
+        wl_resource_post_error(
+            resource,
+            ERROR_ALREADY_CONSTRUCTED,
+            c"xdg_toplevel already has a decoration object".as_ptr(),
+        );
         return;
     }
 
     let version = wl_resource_get_version(resource).clamp(1, MANAGER_VERSION);
     let decoration = wl_resource_create(client, &TOPLEVEL_DECORATION_INTERFACE, version, id);
     if decoration.is_null() {
+        decorated.remove(&toplevel_key);
         wl_client_post_no_memory(client);
         return;
     }
+    drop(decorated);
+
+    let state = Box::new(DecorationState {
+        toplevel_destroy_listener: wl_listener {
+            link: wl_list {
+                prev: ptr::null_mut(),
+                next: ptr::null_mut(),
+            },
+            notify: Some(toplevel_destroyed_before_decoration),
+        },
+        toplevel: toplevel_key,
+        decoration,
+        toplevel_listener_linked: true,
+    });
+    let state = Box::into_raw(state);
+    wl_resource_add_destroy_listener(toplevel, &mut (*state).toplevel_destroy_listener);
 
     wl_resource_set_implementation(
         decoration,
         DECORATION_IMPLEMENTATION.0.as_ptr() as *const c_void,
-        ptr::null_mut(),
-        None,
+        state as *mut c_void,
+        Some(decoration_state_destroy),
     );
     wl_resource_post_event(decoration, EVENT_CONFIGURE, MODE_CLIENT_SIDE);
 }
@@ -314,18 +395,62 @@ unsafe extern "C" fn decoration_destroy(_client: *mut wl_client, resource: *mut 
     }
 }
 
+unsafe extern "C" fn decoration_state_destroy(resource: *mut wl_resource) {
+    if resource.is_null() {
+        return;
+    }
+
+    let state = wl_resource_get_user_data(resource) as *mut DecorationState;
+    if state.is_null() {
+        return;
+    }
+
+    let state = Box::from_raw(state);
+    if state.toplevel_listener_linked {
+        wl_list_remove(&state.toplevel_destroy_listener.link as *const wl_list as *mut wl_list);
+    }
+    if let Some(mut decorated) = decorated_toplevels() {
+        decorated.remove(&state.toplevel);
+    }
+}
+
+unsafe extern "C" fn toplevel_destroyed_before_decoration(
+    listener: *mut wl_listener,
+    _data: *mut c_void,
+) {
+    if listener.is_null() {
+        return;
+    }
+
+    let state = listener as *mut DecorationState;
+    (*state).toplevel_listener_linked = false;
+    if let Some(mut decorated) = decorated_toplevels() {
+        decorated.remove(&(*state).toplevel);
+    }
+    if !(*state).decoration.is_null() {
+        wl_resource_post_error(
+            (*state).decoration,
+            ERROR_ORPHANED,
+            c"xdg_toplevel destroyed before its decoration object".as_ptr(),
+        );
+    }
+}
+
 unsafe extern "C" fn decoration_set_mode(
     _client: *mut wl_client,
     resource: *mut wl_resource,
     mode: u32,
 ) {
     if !resource.is_null() {
-        let configured_mode = if mode == MODE_CLIENT_SIDE {
-            MODE_CLIENT_SIDE
-        } else {
-            MODE_SERVER_SIDE
-        };
-        wl_resource_post_event(resource, EVENT_CONFIGURE, configured_mode);
+        match mode {
+            MODE_CLIENT_SIDE => wl_resource_post_event(resource, EVENT_CONFIGURE, MODE_CLIENT_SIDE),
+            MODE_SERVER_SIDE => wl_resource_post_event(resource, EVENT_CONFIGURE, MODE_SERVER_SIDE),
+            _ => wl_resource_post_error(
+                resource,
+                ERROR_INVALID_MODE,
+                c"invalid zxdg_toplevel_decoration_v1 mode".as_ptr(),
+            ),
+        }
     }
 }
 
