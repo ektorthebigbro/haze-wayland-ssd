@@ -22,6 +22,7 @@ const HOST_STATUS: &CStr = c"supported";
 const MANAGER_VERSION: c_int = 2;
 const MODE_SERVER_SIDE: u32 = 2;
 const EVENT_CONFIGURE: u32 = 0;
+const MANAGER_INTERFACE_NAME: &CStr = c"zxdg_decoration_manager_v1";
 
 #[repr(C)]
 pub struct wl_display {
@@ -196,6 +197,14 @@ fn real_wl_global_create() -> Option<wl_global_create_fn> {
         .ok()
 }
 
+unsafe fn is_decoration_manager_interface(interface: *const wl_interface) -> bool {
+    if interface.is_null() || (*interface).name.is_null() {
+        return false;
+    }
+
+    CStr::from_ptr((*interface).name) == MANAGER_INTERFACE_NAME
+}
+
 unsafe fn create_global_passthrough(
     display: *mut wl_display,
     interface: *const wl_interface,
@@ -337,10 +346,11 @@ pub unsafe extern "C" fn wl_global_create(
     data: *mut c_void,
     bind: Option<wl_global_bind_func_t>,
 ) -> *mut wl_global {
+    let compositor_provides_decoration_manager = is_decoration_manager_interface(interface);
     let global = create_global_passthrough(display, interface, version, data, bind);
 
     let in_haze = IN_HAZE_GLOBAL_CREATE.with(Cell::get);
-    if !in_haze && !global.is_null() {
+    if !in_haze && !global.is_null() && !compositor_provides_decoration_manager {
         maybe_advertise_decoration_manager(display);
     }
 
@@ -362,26 +372,26 @@ pub extern "C" fn haze_wayland_ssd_host_status() -> *const c_char {
     HOST_STATUS.as_ptr()
 }
 
-mod tahoe_window_frame {
+mod haze_window_frame {
     use super::*;
 
     #[derive(Default)]
-    pub struct TahoeWindowFrame {
+    pub struct HazeWindowFrame {
         pub is_focused: Cell<bool>,
     }
 
     #[glib::object_subclass]
-    impl ObjectSubclass for TahoeWindowFrame {
-        const NAME: &'static str = "TahoeWindowFrame";
-        type Type = super::TahoeWindowFrame;
+    impl ObjectSubclass for HazeWindowFrame {
+        const NAME: &'static str = "HazeWindowFrame";
+        type Type = super::HazeWindowFrame;
     }
 
-    impl ObjectImpl for TahoeWindowFrame {
+    impl ObjectImpl for HazeWindowFrame {
         fn properties() -> &'static [glib::ParamSpec] {
             static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
                 vec![glib::ParamSpecBoolean::builder("is-focused")
                     .nick("Is focused")
-                    .blurb("Whether the unmanaged Tahoe frame tracks an active toplevel")
+                    .blurb("Whether the unmanaged Haze frame tracks an active toplevel")
                     .default_value(false)
                     .readwrite()
                     .build()]
@@ -407,16 +417,16 @@ mod tahoe_window_frame {
 }
 
 glib::wrapper! {
-    pub struct TahoeWindowFrame(ObjectSubclass<tahoe_window_frame::TahoeWindowFrame>);
+    pub struct HazeWindowFrame(ObjectSubclass<haze_window_frame::HazeWindowFrame>);
 }
 
 #[no_mangle]
 pub extern "C" fn haze_wayland_ssd_register_types() {
-    let _ = TahoeWindowFrame::static_type();
+    let _ = HazeWindowFrame::static_type();
 }
 
 #[no_mangle]
 pub extern "C" fn haze_wayland_ssd_new_window_frame() -> *mut glib::gobject_ffi::GObject {
-    let frame: TahoeWindowFrame = glib::Object::new();
+    let frame: HazeWindowFrame = glib::Object::new();
     frame.upcast::<glib::Object>().into_glib_ptr()
 }
