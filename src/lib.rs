@@ -321,6 +321,15 @@ unsafe extern "C" fn decoration_unset_mode(_client: *mut wl_client, resource: *m
 }
 
 #[no_mangle]
+/// Interposes Mutter's `wl_global_create` calls and injects Haze's decoration
+/// manager global after forwarding the original global creation.
+///
+/// # Safety
+///
+/// This function is called by `libwayland-server` through the C ABI. The caller
+/// must pass the same pointer arguments and callback contract required by the
+/// real `wl_global_create`; Haze forwards them unchanged before doing any
+/// optional decoration-manager injection.
 pub unsafe extern "C" fn wl_global_create(
     display: *mut wl_display,
     interface: *const wl_interface,
