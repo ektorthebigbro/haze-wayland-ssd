@@ -20,6 +20,7 @@ use std::sync::Mutex;
 const VERSION: &CStr = c"0.1.0";
 const HOST_STATUS: &CStr = c"supported";
 const MANAGER_VERSION: c_int = 2;
+const MODE_CLIENT_SIDE: u32 = 1;
 const MODE_SERVER_SIDE: u32 = 2;
 const EVENT_CONFIGURE: u32 = 0;
 const MANAGER_INTERFACE_NAME: &CStr = c"zxdg_decoration_manager_v1";
@@ -304,7 +305,7 @@ unsafe extern "C" fn manager_get_toplevel_decoration(
         ptr::null_mut(),
         None,
     );
-    wl_resource_post_event(decoration, EVENT_CONFIGURE, MODE_SERVER_SIDE);
+    wl_resource_post_event(decoration, EVENT_CONFIGURE, MODE_CLIENT_SIDE);
 }
 
 unsafe extern "C" fn decoration_destroy(_client: *mut wl_client, resource: *mut wl_resource) {
@@ -316,10 +317,15 @@ unsafe extern "C" fn decoration_destroy(_client: *mut wl_client, resource: *mut 
 unsafe extern "C" fn decoration_set_mode(
     _client: *mut wl_client,
     resource: *mut wl_resource,
-    _mode: u32,
+    mode: u32,
 ) {
     if !resource.is_null() {
-        wl_resource_post_event(resource, EVENT_CONFIGURE, MODE_SERVER_SIDE);
+        let configured_mode = if mode == MODE_CLIENT_SIDE {
+            MODE_CLIENT_SIDE
+        } else {
+            MODE_SERVER_SIDE
+        };
+        wl_resource_post_event(resource, EVENT_CONFIGURE, configured_mode);
     }
 }
 
