@@ -23,11 +23,24 @@ const MANAGER_VERSION: c_int = 2;
 const XDG_TOPLEVEL_VERSION: c_int = 6;
 const MODE_CLIENT_SIDE: u32 = 1;
 const MODE_SERVER_SIDE: u32 = 2;
+const CLIENT_KIND_WAYLAND: u32 = 1;
+const CLIENT_KIND_XWAYLAND: u32 = 2;
 const EVENT_CONFIGURE: u32 = 0;
 const ERROR_ALREADY_CONSTRUCTED: u32 = 1;
 const ERROR_ORPHANED: u32 = 2;
 const ERROR_INVALID_MODE: u32 = 3;
 const MANAGER_INTERFACE_NAME: &CStr = c"zxdg_decoration_manager_v1";
+const EMBEDDED_CONTROLS_IDENTITIES: &[&str] = &[
+    "org.gnome.",
+    "libadwaita",
+    "gtk4",
+    "firefox",
+    "chromium",
+    "google-chrome",
+    "brave-browser",
+    "vivaldi",
+    "jetbrains",
+];
 
 #[repr(C)]
 pub struct wl_display {
@@ -510,6 +523,39 @@ pub extern "C" fn haze_wayland_ssd_supported() -> bool {
 }
 
 #[no_mangle]
+pub extern "C" fn haze_wayland_ssd_xwayland_supported() -> bool {
+    true
+}
+
+#[no_mangle]
+/// Returns the effective Haze decoration policy for compositor-side callers.
+///
+/// The Wayland half of this library negotiates `xdg-decoration` directly.
+/// Xwayland clients do not speak that protocol, so callers must apply the
+/// returned server-side policy through Mutter's `MetaWindowActor` path.
+///
+/// Return values intentionally match `zxdg_toplevel_decoration_v1.mode`.
+///
+/// # Safety
+///
+/// `identity` may be null. When non-null it must point to a valid
+/// nul-terminated C string for the duration of the call.
+pub unsafe extern "C" fn haze_wayland_ssd_decoration_policy(
+    client_kind: u32,
+    identity: *const c_char,
+) -> u32 {
+    if client_kind != CLIENT_KIND_WAYLAND && client_kind != CLIENT_KIND_XWAYLAND {
+        return MODE_CLIENT_SIDE;
+    }
+
+    if identity_has_embedded_controls(identity) {
+        return MODE_CLIENT_SIDE;
+    }
+
+    MODE_SERVER_SIDE
+}
+
+#[no_mangle]
 pub extern "C" fn haze_wayland_ssd_version() -> *const c_char {
     VERSION.as_ptr()
 }
@@ -517,6 +563,19 @@ pub extern "C" fn haze_wayland_ssd_version() -> *const c_char {
 #[no_mangle]
 pub extern "C" fn haze_wayland_ssd_host_status() -> *const c_char {
     HOST_STATUS.as_ptr()
+}
+
+unsafe fn identity_has_embedded_controls(identity: *const c_char) -> bool {
+    if identity.is_null() {
+        return false;
+    }
+
+    let identity = CStr::from_ptr(identity)
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    EMBEDDED_CONTROLS_IDENTITIES
+        .iter()
+        .any(|token| identity.contains(token))
 }
 
 mod haze_window_frame {

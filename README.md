@@ -11,10 +11,11 @@ are honored so applications with embedded controls keep their own buttons;
 clients that request server-side mode, or unset their preference, can be handed
 to Haze's Shell-side replacement frame path.
 
-This library implements the Wayland `zxdg-decoration` negotiation surface only.
-Xwayland windows do not speak this protocol, so their borders and replacement
-visuals must be handled by Haze's GNOME Shell overlay code rather than by this
-preload library.
+Xwayland windows do not speak `zxdg-decoration`, so they cannot receive a
+Wayland decoration configure event. For those clients the library exposes a
+C-compatible decoration policy bridge. Haze applies that policy through
+Mutter's `MetaWindowActor` path so Xwayland and Wayland windows share the same
+replacement frame behavior without stripping embedded app controls.
 
 ## Supported Host Matrix
 
@@ -27,6 +28,17 @@ keeps the preferences page insensitive until the host is supported and the
 backend has been installed.
 
 ## Build
+
+Install from the latest GitHub release:
+
+```sh
+curl -fsSL https://github.com/ektorthebigbro/haze-wayland-ssd/releases/latest/download/install.sh | bash
+```
+
+Restart GNOME Shell or log out and back in after installing or replacing the
+preload library.
+
+Build from a source checkout:
 
 ```sh
 cargo build --release
