@@ -53,4 +53,34 @@ wayland_scanner::generate_server_code!("{PROTOCOL_PATH}");
         ),
     )
     .unwrap_or_else(|error| panic!("failed to write generated protocol module: {error}"));
+
+    let mutter_api = [18, 17, 16, 15]
+        .into_iter()
+        .find(|api| {
+            pkg_config::Config::new()
+                .probe(&format!("mutter-clutter-{api}"))
+                .is_ok()
+                && pkg_config::Config::new()
+                    .probe(&format!("mutter-cogl-{api}"))
+                    .is_ok()
+        })
+        .unwrap_or_else(|| panic!("failed to locate supported Mutter Clutter/Cogl pkg-config files; expected mutter-clutter-15..18 and mutter-cogl-15..18"));
+    let clutter_name = format!("mutter-clutter-{mutter_api}");
+    let cogl_name = format!("mutter-cogl-{mutter_api}");
+    let mutter_name = format!("libmutter-{mutter_api}");
+    let _clutter = pkg_config::Config::new()
+        .probe(&clutter_name)
+        .unwrap_or_else(|error| panic!("failed to locate {clutter_name} with pkg-config: {error}"));
+    let _cogl = pkg_config::Config::new()
+        .probe(&cogl_name)
+        .unwrap_or_else(|error| panic!("failed to locate {cogl_name} with pkg-config: {error}"));
+    let mutter = pkg_config::Config::new()
+        .probe(&mutter_name)
+        .unwrap_or_else(|error| panic!("failed to locate {mutter_name} with pkg-config: {error}"));
+
+    for path in mutter.link_paths.iter() {
+        if path.to_string_lossy().contains("mutter") {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", path.display());
+        }
+    }
 }

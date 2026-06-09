@@ -17,6 +17,16 @@ use std::ffi::CStr;
 use std::ptr;
 use std::sync::{Mutex, MutexGuard};
 
+mod window_clip_effect;
+
+#[used]
+#[cfg_attr(target_os = "linux", link_section = ".init_array")]
+static HAZE_WAYLAND_SSD_INIT: extern "C" fn() = haze_wayland_ssd_preload_init;
+
+extern "C" fn haze_wayland_ssd_preload_init() {
+    window_clip_effect::register_type();
+}
+
 const VERSION: &CStr = c"0.1.0";
 const HOST_STATUS: &CStr = c"supported";
 const MANAGER_VERSION: c_int = 2;
@@ -528,6 +538,11 @@ pub extern "C" fn haze_wayland_ssd_xwayland_supported() -> bool {
 }
 
 #[no_mangle]
+pub extern "C" fn haze_wayland_ssd_window_clip_supported() -> bool {
+    window_clip_effect::is_supported()
+}
+
+#[no_mangle]
 /// Returns the effective Haze decoration policy for compositor-side callers.
 ///
 /// The Wayland half of this library negotiates `xdg-decoration` directly.
@@ -629,6 +644,7 @@ glib::wrapper! {
 #[no_mangle]
 pub extern "C" fn haze_wayland_ssd_register_types() {
     let _ = HazeWindowFrame::static_type();
+    window_clip_effect::register_type();
 }
 
 #[no_mangle]
