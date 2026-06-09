@@ -6,10 +6,10 @@ loaded into GNOME Shell/Mutter with a per-user preload environment.
 
 The backend advertises `zxdg_decoration_manager_v1` when Mutter has not already
 done so, creates decoration resources for clients that request them, and
-negotiates the effective decoration mode. Explicit client-side requests are
-honored so applications with embedded controls keep their own buttons; clients
-that request server-side mode, or unset their preference, can be handed to
-Haze's Shell-side replacement frame path.
+defaults undecided toplevels to server-side mode. Explicit client-side requests
+are honored so applications with embedded controls keep their own buttons;
+clients that request server-side mode, or unset their preference, can be handed
+to Haze's Shell-side replacement frame path.
 
 This library implements the Wayland `zxdg-decoration` negotiation surface only.
 Xwayland windows do not speak this protocol, so their borders and replacement

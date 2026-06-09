@@ -222,6 +222,7 @@ struct DecorationState {
     toplevel: usize,
     decoration: *mut wl_resource,
     toplevel_listener_linked: bool,
+    configured_mode: Cell<u32>,
 }
 
 fn real_wl_global_create() -> Option<wl_global_create_fn> {
@@ -376,6 +377,7 @@ unsafe extern "C" fn manager_get_toplevel_decoration(
         toplevel: toplevel_key,
         decoration,
         toplevel_listener_linked: true,
+        configured_mode: Cell::new(MODE_SERVER_SIDE),
     });
     let state = Box::into_raw(state);
     wl_resource_add_destroy_listener(toplevel, &mut (*state).toplevel_destroy_listener);
@@ -386,7 +388,7 @@ unsafe extern "C" fn manager_get_toplevel_decoration(
         state as *mut c_void,
         Some(decoration_state_destroy),
     );
-    wl_resource_post_event(decoration, EVENT_CONFIGURE, MODE_CLIENT_SIDE);
+    configure_decoration(decoration, MODE_SERVER_SIDE);
 }
 
 unsafe extern "C" fn decoration_destroy(_client: *mut wl_client, resource: *mut wl_resource) {
@@ -441,23 +443,37 @@ unsafe extern "C" fn decoration_set_mode(
     resource: *mut wl_resource,
     mode: u32,
 ) {
-    if !resource.is_null() {
-        match mode {
-            MODE_CLIENT_SIDE => wl_resource_post_event(resource, EVENT_CONFIGURE, MODE_CLIENT_SIDE),
-            MODE_SERVER_SIDE => wl_resource_post_event(resource, EVENT_CONFIGURE, MODE_SERVER_SIDE),
-            _ => wl_resource_post_error(
-                resource,
-                ERROR_INVALID_MODE,
-                c"invalid zxdg_toplevel_decoration_v1 mode".as_ptr(),
-            ),
-        }
+    if resource.is_null() {
+        return;
+    }
+
+    match mode {
+        MODE_CLIENT_SIDE | MODE_SERVER_SIDE => configure_decoration(resource, mode),
+        _ => wl_resource_post_error(
+            resource,
+            ERROR_INVALID_MODE,
+            c"invalid zxdg_toplevel_decoration_v1 mode".as_ptr(),
+        ),
     }
 }
 
 unsafe extern "C" fn decoration_unset_mode(_client: *mut wl_client, resource: *mut wl_resource) {
     if !resource.is_null() {
-        wl_resource_post_event(resource, EVENT_CONFIGURE, MODE_SERVER_SIDE);
+        configure_decoration(resource, MODE_SERVER_SIDE);
     }
+}
+
+unsafe fn configure_decoration(resource: *mut wl_resource, mode: u32) {
+    if resource.is_null() {
+        return;
+    }
+
+    let state = wl_resource_get_user_data(resource) as *mut DecorationState;
+    if !state.is_null() {
+        (*state).configured_mode.set(mode);
+    }
+
+    wl_resource_post_event(resource, EVENT_CONFIGURE, mode);
 }
 
 #[no_mangle]
